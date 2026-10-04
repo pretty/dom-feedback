@@ -26,7 +26,7 @@ Other controls:
 - The trash icon clears every comment on the current page.
 - While editing text, **Reset text** puts back the original. Cancel or `Esc` drops unsaved edits.
 
-Comments are saved per URL, so they stay after a reload. Text edits are shown again on reload if the page text hasn't changed. Deleting a comment puts the original text back.
+Comments are kept per URL while the extension is open, so they survive in-app navigation. Closing the extension (the × button or `Alt+Shift+F`) or reloading the page clears all comments and puts the original text back. Deleting a comment also puts its original text back.
 
 ## Output
 

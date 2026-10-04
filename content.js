@@ -243,7 +243,7 @@
         <button class="tb icon" data-action="clear" title="Clear all comments on this page">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
         </button>
-        <button class="tb icon" data-action="close" title="Hide (Alt+Shift+F)">
+        <button class="tb icon" data-action="close" title="Close and clear everything (Alt+Shift+F)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
         </button>
       </div>
@@ -272,8 +272,8 @@
   const cursorSheet = new CSSStyleSheet();
   cursorSheet.replaceSync('* { cursor: crosshair !important; }');
 
-  const pageKey = () => 'feedback:' + location.href;
-  let key = pageKey();
+  const store = new Map();
+  let key = location.href;
   let comments = [];
   let visible = true;
   let picking = false;
@@ -544,17 +544,25 @@
     }
   }
 
-  async function load() {
-    key = pageKey();
-    const data = await chrome.storage.local.get(key);
-    comments = data[key] || [];
+  function load() {
+    key = location.href;
+    comments = store.get(key) || [];
     applyTextEdits();
     render();
   }
 
   function persist() {
-    if (comments.length) chrome.storage.local.set({ [key]: comments });
-    else chrome.storage.local.remove(key);
+    if (comments.length) store.set(key, comments);
+    else store.delete(key);
+    render();
+  }
+
+  function clearAll() {
+    closePopover();
+    for (const [el, original] of originals) el.innerHTML = original.html;
+    originals.clear();
+    store.clear();
+    comments = [];
     render();
   }
 
@@ -652,7 +660,7 @@
       setPicking(true);
       load();
     } else {
-      closePopover();
+      clearAll();
       setPicking(false);
       panel.hidden = true;
     }
@@ -863,7 +871,7 @@
 
   setInterval(() => {
     if (!visible) return;
-    if (pageKey() !== key) {
+    if (location.href !== key) {
       closePopover();
       load();
     } else {

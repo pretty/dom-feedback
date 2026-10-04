@@ -3,7 +3,7 @@
   "name": "DOM Feedback",
   "version": "1.0.0",
   "description": "Comment on page elements and copy the feedback as JSON for an AI agent.",
-  "permissions": ["activeTab", "scripting", "storage", "clipboardWrite"],
+  "permissions": ["activeTab", "scripting", "clipboardWrite"],
   "background": {
     "service_worker": "background.js"
   },
