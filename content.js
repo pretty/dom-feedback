@@ -78,14 +78,18 @@
     .pin:hover { transform: scale(1.15); }
 
     .popover { position: fixed; width: 320px; padding: 12px; }
+    .popover-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
     .popover-selector {
+      flex: 1;
+      min-width: 0;
       font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
       color: var(--muted);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      margin-bottom: 8px;
     }
+    .link { flex: none; height: 22px; padding: 0 6px; border-radius: 6px; font-size: 11px; color: #c7c0ff; }
+    .link:hover { background: var(--bg-2); }
     textarea {
       display: block;
       width: 100%;
@@ -180,6 +184,8 @@
     }
     .item-body { flex: 1; min-width: 0; }
     .item-text { margin: 0 0 2px; white-space: pre-wrap; word-break: break-word; }
+    .item-edit { margin: 0 0 2px; color: var(--muted); word-break: break-word; }
+    .item-edit ins { text-decoration: none; color: var(--text); }
     .item-selector {
       display: block;
       font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -212,7 +218,10 @@
       <div class="highlight" hidden><span class="highlight-label"></span></div>
       <div class="pins"></div>
       <div class="popover card" hidden>
-        <div class="popover-selector"></div>
+        <div class="popover-head">
+          <div class="popover-selector"></div>
+          <button class="link" data-action="edit-text" title="Edit this element's text on the page">Edit text</button>
+        </div>
         <textarea placeholder="What should change?"></textarea>
         <div class="popover-actions">
           <span class="hint">${IS_MAC ? '⌘' : 'Ctrl'}+Enter to save</span>
@@ -227,7 +236,7 @@
       </div>
       <div class="toast" hidden></div>
       <div class="toolbar card">
-        <button class="tb" data-action="pick" title="Select an element (Esc to stop)"><span class="dot"></span>Select</button>
+        <button class="tb" data-action="pick" title="Select an element (↑↓ for parent or child, Esc to stop)"><span class="dot"></span>Select</button>
         <button class="tb" data-action="list" title="Show comments">Comments <span class="count">0</span></button>
         <div class="divider"></div>
         <button class="tb copy" data-action="copy">Copy JSON</button>
@@ -251,6 +260,7 @@
   const popoverSelector = $('.popover-selector');
   const textarea = $('textarea');
   const deleteBtn = $('[data-action="delete"]');
+  const editTextBtn = $('[data-action="edit-text"]');
   const panel = $('.panel');
   const list = $('.list');
   const empty = $('.empty');
@@ -268,9 +278,11 @@
   let visible = true;
   let picking = false;
   let hovered = null;
+  let pointer = null;
   let draft = null;
   let toastTimer = 0;
   let layoutQueued = false;
+  const originals = new Map();
 
   function adoptStyles(target, cssText) {
     try {
@@ -348,6 +360,10 @@
     return info;
   }
 
+  const textOf = (el) => (el.innerText || '').replace(/\s+/g, ' ').trim();
+
+  const canEditText = (el) => !!textOf(el) && !el.matches('input, textarea, select, img, video, canvas, iframe');
+
   function viewport() {
     const width = innerWidth;
     const device = width < 768 ? 'mobile' : width < 1024 ? 'tablet' : 'desktop';
@@ -394,19 +410,74 @@
   }
 
   function openPopover(el, comment = null) {
-    draft = { el, comment, selector: comment ? comment.selector : getSelector(el) };
+    if (draft) closePopover();
+    draft = {
+      el,
+      comment,
+      selector: comment ? comment.selector : getSelector(el),
+      element: comment ? comment.element : describe(el),
+      startHtml: el.innerHTML,
+      editing: false,
+      touched: false,
+    };
     hovered = null;
     showHighlight(el);
     popoverSelector.textContent = draft.selector;
     popoverSelector.title = draft.selector;
     textarea.value = comment ? comment.comment : '';
     deleteBtn.hidden = !comment;
+    editTextBtn.hidden = !comment?.textEdit && !canEditText(el);
+    editTextBtn.textContent = 'Edit text';
     popover.hidden = false;
     positionPopover(el);
     textarea.focus();
   }
 
+  const isDirty = () => draft && draft.el.innerHTML !== draft.startHtml;
+
+  function startTextEdit() {
+    const { el } = draft;
+    if (draft.editing) {
+      el.innerHTML = originals.get(el).html;
+    } else {
+      if (!originals.has(el)) originals.set(el, { html: el.innerHTML, text: textOf(el) });
+      draft.editable = el.getAttribute('contenteditable');
+      el.contentEditable = 'plaintext-only';
+      draft.editing = draft.touched = true;
+      editTextBtn.textContent = 'Reset text';
+    }
+    el.focus();
+    selectVisibleText(el);
+  }
+
+  function selectVisibleText(el) {
+    const visible = [];
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      if (node.data.trim() && range.getClientRects().length) visible.push(node);
+    }
+    const selection = getSelection();
+    if (!visible.length) return selection.collapse(el, el.childNodes.length);
+    const last = visible.at(-1);
+    selection.setBaseAndExtent(visible[0], 0, last, last.length);
+  }
+
+  function stopTextEdit() {
+    if (!draft?.editing) return;
+    const { el, editable } = draft;
+    if (editable === null) el.removeAttribute('contenteditable');
+    else el.setAttribute('contenteditable', editable);
+    draft.editing = false;
+  }
+
   function closePopover() {
+    if (draft) {
+      stopTextEdit();
+      if (isDirty()) draft.el.innerHTML = draft.startHtml;
+    }
     draft = null;
     popover.hidden = true;
     hideHighlight();
@@ -414,35 +485,70 @@
 
   function saveDraft() {
     const text = textarea.value.trim();
-    if (!text) {
+    const { el, comment } = draft;
+    const original = originals.get(el);
+    let textEdit = comment?.textEdit ?? null;
+    let html = comment?.html;
+    if (original && (draft.touched || textEdit)) {
+      const after = textOf(el);
+      textEdit = after !== original.text ? { from: original.text, to: after } : null;
+      html = el.innerHTML;
+    }
+    if (!text && !textEdit) {
       textarea.focus();
       return;
     }
-    if (draft.comment) {
-      draft.comment.comment = text;
+    stopTextEdit();
+    const target = comment ?? {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+      selector: draft.selector,
+      element: draft.element,
+      viewport: viewport(),
+    };
+    target.comment = text;
+    if (textEdit) {
+      target.textEdit = textEdit;
+      target.html = html;
     } else {
-      comments.push({
-        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
-        selector: draft.selector,
-        comment: text,
-        element: describe(draft.el),
-        viewport: viewport(),
-      });
+      delete target.textEdit;
+      delete target.html;
     }
+    if (!comment) comments.push(target);
+    draft = null;
     closePopover();
     persist();
   }
 
+  function restoreText(c) {
+    const el = c.textEdit && find(c.selector);
+    const original = el && originals.get(el);
+    if (!original) return;
+    el.innerHTML = original.html;
+    originals.delete(el);
+  }
+
   function removeComment(id) {
-    comments = comments.filter((c) => c.id !== id);
     if (draft?.comment?.id === id) closePopover();
+    const c = comments.find((c) => c.id === id);
+    if (c) restoreText(c);
+    comments = comments.filter((c) => c.id !== id);
     persist();
+  }
+
+  function applyTextEdits() {
+    for (const c of comments) {
+      const el = c.textEdit && c.html && find(c.selector);
+      if (!el || originals.has(el) || textOf(el) !== c.textEdit.from) continue;
+      originals.set(el, { html: el.innerHTML, text: c.textEdit.from });
+      el.innerHTML = c.html;
+    }
   }
 
   async function load() {
     key = pageKey();
     const data = await chrome.storage.local.get(key);
     comments = data[key] || [];
+    applyTextEdits();
     render();
   }
 
@@ -463,7 +569,7 @@
         pin.className = 'pin';
         pin.dataset.id = c.id;
         pin.textContent = i + 1;
-        pin.title = c.comment;
+        pin.title = c.comment || `Text: ${c.textEdit?.to}`;
         return pin;
       })
     );
@@ -479,10 +585,22 @@
         }
         li.innerHTML = `
           <span class="num">${i + 1}</span>
-          <div class="item-body"><p class="item-text"></p><code class="item-selector"></code></div>
+          <div class="item-body">
+            <p class="item-text"></p>
+            <p class="item-edit" hidden><del></del> → <ins></ins></p>
+            <code class="item-selector"></code>
+          </div>
           <button class="remove" data-action="remove" title="Delete">×</button>
         `;
-        li.querySelector('.item-text').textContent = c.comment;
+        const itemText = li.querySelector('.item-text');
+        itemText.textContent = c.comment;
+        itemText.hidden = !c.comment;
+        if (c.textEdit) {
+          const edit = li.querySelector('.item-edit');
+          edit.hidden = false;
+          edit.querySelector('del').textContent = `"${c.textEdit.from}"`;
+          edit.querySelector('ins').textContent = `"${c.textEdit.to}"`;
+        }
         li.querySelector('.item-selector').textContent = c.selector;
         return li;
       })
@@ -547,7 +665,13 @@
         url: location.href,
         title: document.title,
         viewport: viewport(),
-        comments: comments.map(({ selector, comment, element, viewport }) => ({ selector, comment, element, viewport })),
+        comments: comments.map(({ selector, comment, textEdit, element, viewport }) => ({
+          selector,
+          ...(comment && { comment }),
+          ...(textEdit && { textEdit }),
+          element,
+          viewport,
+        })),
       },
       null,
       2
@@ -575,31 +699,87 @@
 
   const isOurs = (e) => e.composedPath().includes(host);
 
+  const isEditing = (e) => draft?.editing && draft.el.contains(e.target);
+
+  const boxless = (el) => getComputedStyle(el).display === 'contents';
+
+  function pickTarget(el) {
+    for (let parent = el.parentElement; parent && parent !== document.body; parent = el.parentElement) {
+      const display = getComputedStyle(el).display;
+      if (display !== 'contents') {
+        const text = textOf(el);
+        if (!text || display !== 'inline' || textOf(parent) !== text) break;
+      }
+      el = parent;
+    }
+    return el;
+  }
+
   function onMove(e) {
     if (!picking || draft || isOurs(e)) return;
-    hovered = e.target;
+    if (e.target !== pointer || !hovered) {
+      pointer = e.target;
+      hovered = pickTarget(pointer);
+    }
+    showHighlight(hovered);
+  }
+
+  function changeDepth(up) {
+    let next = hovered;
+    do {
+      next = up
+        ? next.parentElement !== document.documentElement && next.parentElement
+        : [...next.children].find((c) => c.contains(pointer));
+    } while (next && boxless(next));
+    if (!next) return;
+    hovered = next;
     showHighlight(hovered);
   }
 
   function onBlock(e) {
-    if (!picking || isOurs(e)) return;
+    if (isOurs(e)) return;
+    if (isEditing(e)) {
+      e.stopImmediatePropagation();
+      if (e.type === 'click') e.preventDefault();
+      return;
+    }
+    if (!picking) return;
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
   }
 
   function onClick(e) {
-    if (!picking || isOurs(e)) return;
     onBlock(e);
-    if (draft && textarea.value.trim()) {
+    if (!picking || isOurs(e) || isEditing(e)) return;
+    if (draft && (textarea.value.trim() || isDirty())) {
       textarea.focus();
       return;
     }
-    openPopover(e.target);
+    const onPath = hovered && (hovered.contains(e.target) || e.target.contains(hovered));
+    openPopover(onPath ? hovered : pickTarget(e.target));
   }
 
   function onKey(e) {
-    if (e.key !== 'Escape' || !visible) return;
+    if (!visible) return;
+    if (isEditing(e)) {
+      e.stopImmediatePropagation();
+      if (e.type === 'keydown' && e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        return saveDraft();
+      }
+      if (e.type === 'keydown' && e.key === ' ' && e.target.closest('button, summary')) {
+        e.preventDefault();
+        document.execCommand('insertText', false, ' ');
+      }
+    }
+    if (e.type !== 'keydown') return;
+    if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && picking && !draft && hovered) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      return changeDepth(e.key === 'ArrowUp');
+    }
+    if (e.key !== 'Escape') return;
     if (draft) closePopover();
     else if (picking) setPicking(false);
     else return;
@@ -640,8 +820,9 @@
         return copyJson();
       case 'clear':
         if (comments.length && confirm(`Delete all ${comments.length} comments on this page?`)) {
-          comments = [];
           closePopover();
+          comments.forEach(restoreText);
+          comments = [];
           persist();
         }
         return;
@@ -651,6 +832,8 @@
         return saveDraft();
       case 'cancel':
         return closePopover();
+      case 'edit-text':
+        return draft && startTextEdit();
       case 'delete':
         return draft?.comment && removeComment(draft.comment.id);
     }
@@ -672,7 +855,9 @@
   for (const type of ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'dblclick', 'auxclick']) {
     window.addEventListener(type, onBlock, true);
   }
-  window.addEventListener('keydown', onKey, true);
+  for (const type of ['keydown', 'keyup', 'keypress']) {
+    window.addEventListener(type, onKey, true);
+  }
   window.addEventListener('scroll', queueLayout, { capture: true, passive: true });
   window.addEventListener('resize', queueLayout);
 
